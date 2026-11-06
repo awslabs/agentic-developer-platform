@@ -70,7 +70,7 @@ jobs:
       ADP_WORKFLOW_REVISION: ${{ github.workflow_sha }}
       TF_VAR_deployment_role_boundaries: ${{ vars.ADP_INSIGHTS_ROLE_BOUNDARIES || '{}' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.adp_source_revision || github.sha }}
           persist-credentials: false
@@ -114,7 +114,7 @@ jobs:
             [[ "$observed_digest" == "$expected_digest" ]]
           fi
           echo "ADP_ACCOUNT_ID=$ADP_ACCOUNT_ID" >> "$GITHUB_ENV"
-      - uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@v4
         with:
           terraform_version: '1.9.8'
           terraform_wrapper: false
@@ -138,7 +138,7 @@ jobs:
         run: python3 modules/insights/scripts/release_evidence.py
       - name: Publish engine context
         if: env.ADP_MODE == 'apply'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: adp-deployment-context-${{ github.run_attempt }}
           path: ${{ runner.temp }}/adp-deployment-context/deployment-context.json
@@ -146,7 +146,7 @@ jobs:
           retention-days: 7
       - name: Publish Insights release
         if: env.ADP_MODE == 'apply'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: adp-release-insights-${{ github.run_attempt }}
           path: ${{ runner.temp }}/adp-release-insights/release.json

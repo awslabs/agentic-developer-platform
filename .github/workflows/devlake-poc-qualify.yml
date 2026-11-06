@@ -41,10 +41,10 @@ jobs:
     runs-on: arc-runner-org
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - run: python3 -m pip install -r modules/insights/schemas/requirements.txt
@@ -153,10 +153,10 @@ jobs:
       adp_contract_digest: ${{ inputs.adp_contract_digest }}
       GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - run: python3 -m pip install -r modules/insights/schemas/requirements.txt
@@ -170,7 +170,7 @@ jobs:
             --plan docs/engineering-insights/devlake-poc/delivery-flow/acceptance-mapping.json \
             --output "$RUNNER_TEMP/summary.json"
       # The repository evaluator reads this exact run/attempt summary archive.
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: devlake-pilot-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/summary.json
@@ -183,7 +183,7 @@ jobs:
             --summary "$RUNNER_TEMP/summary.json" \
             --output "$RUNNER_TEMP/delivery.json"
       # ReleaseProvider reads delivery.json using the accepted delivery contract.
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: devlake-pilot-delivery-${{ github.run_attempt }}
           path: ${{ runner.temp }}/delivery.json

@@ -30,13 +30,13 @@ jobs:
     runs-on: arc-runner-org
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Run isolated Insights contract tests
         run: python3 -m unittest discover -s modules/insights/tests -p 'test_*.py'
       - name: Check deploy entrypoint when present
         run: |
           if [ -f modules/insights/deploy.sh ]; then bash -n modules/insights/deploy.sh; fi
-      - uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@v4
         with:
           terraform_version: '1.9.8'
       - name: Validate Insights infrastructure without backend or AWS access
@@ -51,7 +51,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - run: python -m pip install -r modules/insights/schemas/requirements.txt

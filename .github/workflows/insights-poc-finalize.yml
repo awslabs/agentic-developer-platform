@@ -28,7 +28,7 @@ jobs:
     environment: adp-devlake-finalizer
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ vars.ADP_DEVLAKE_FINALIZER_REVISION }}
           persist-credentials: false

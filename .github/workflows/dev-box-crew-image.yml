@@ -52,7 +52,7 @@ jobs:
           [[ "$ENVIRONMENT" =~ ^[a-z][a-z0-9-]{0,31}$ ]]
           [[ "$CREW_MODEL_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$ ]]
           [ -z "$PROFILE_REVISION" ] || [[ "$PROFILE_REVISION" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]]
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Build the Crew bundle and image, verify the AMI tags, pin the release

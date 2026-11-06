@@ -32,13 +32,13 @@ jobs:
     runs-on: arc-runner-org
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version: '1.26.0'
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - name: Install isolated PostgreSQL test dependencies
@@ -66,11 +66,11 @@ jobs:
     runs-on: arc-runner-org
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version: '1.26.0'
       - name: Check reviewed shared-CLI predecessor before candidate verification
@@ -87,11 +87,11 @@ jobs:
     environment: adp-devlake-publisher
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version: '1.26.0'
       - name: Build the explicitly selected component from pinned source
@@ -168,7 +168,7 @@ jobs:
     environment: adp-devlake-finalizer
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ vars.ADP_DEVLAKE_FINALIZER_REVISION }}
           persist-credentials: false

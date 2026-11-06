@@ -113,7 +113,7 @@ jobs:
           [[ "$ACCOUNT_ID" =~ ^[0-9]{12}$ ]]
           [[ "$AWS_REGION" =~ ^[a-z]{2}(-[a-z]+)+-[0-9]+$ ]]
           test -n "$ADP_RUNNER_CONFIG_JSON"
-      - uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@v4
         with:
           terraform_version: '1.14.6'
           terraform_wrapper: false
