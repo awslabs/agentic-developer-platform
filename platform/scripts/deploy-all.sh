@@ -394,14 +394,33 @@ fi
 # Anyone cloning this repo can run the script without editing tfvars. The
 # detected IP is exported as TF_VAR_eks_public_access_cidrs so Terraform picks
 # it up. If the caller already set the env var, respect it.
-if [ "$UPDATE_MODE" = false ] && [ -z "${TF_VAR_eks_public_access_cidrs:-}" ]; then
-  MY_IP=""
-  for url in https://checkip.amazonaws.com https://api.ipify.org https://ifconfig.me; do
-    MY_IP=$(curl -fsS --max-time 5 "$url" 2>/dev/null | tr -d '[:space:]' || true)
-    [ -n "$MY_IP" ] && break
+#
+# Every later Terraform and kubectl request must leave from that one address.
+# Hosts behind rotating NAT or proxy egress pools pass a single lookup and then
+# time out against the EKS API minutes later, so sample the address and refuse
+# when the samples disagree. Prints the distinct IPv4 addresses seen.
+detect_public_ips() {
+  local ip url seen=""
+  for _ in 1 2 3; do
+    ip=$(curl -fsS --max-time 5 https://checkip.amazonaws.com 2>/dev/null | tr -d '[:space:]' || true)
+    [[ "$ip" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || continue
+    case " $seen " in *" $ip "*) ;; *) seen="${seen:+$seen }$ip" ;; esac
   done
+  if [ -z "$seen" ]; then
+    for url in https://api.ipify.org https://ifconfig.me; do
+      ip=$(curl -fsS --max-time 5 "$url" 2>/dev/null | tr -d '[:space:]' || true)
+      if [[ "$ip" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then seen="$ip"; break; fi
+    done
+  fi
+  printf '%s' "$seen"
+}
+if [ "$UPDATE_MODE" = false ] && [ -z "${TF_VAR_eks_public_access_cidrs:-}" ]; then
+  MY_IP=$(detect_public_ips)
   if [ -z "$MY_IP" ]; then
     fail "Could not detect your public IP. Set TF_VAR_eks_public_access_cidrs='[\"<ip>/32\"]' manually."
+  fi
+  if [ "$MY_IP" != "${MY_IP%% *}" ]; then
+    fail "Public IP lookups disagree (${MY_IP// /, }): this host's outbound address changes between connections, so a /32 allowlist would lock Terraform and kubectl out of the EKS API. Set TF_VAR_eks_public_access_cidrs='[\"<egress-cidr>\"]' to the range your traffic leaves from, or deploy from a host with a stable address."
   fi
   export TF_VAR_eks_public_access_cidrs="[\"${MY_IP}/32\"]"
   ok "EKS public API will allow: ${MY_IP}/32 (your current public IP)"
