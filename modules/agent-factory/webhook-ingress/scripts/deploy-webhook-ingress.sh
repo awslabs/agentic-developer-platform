@@ -249,14 +249,16 @@ BOOTSTRAP_LOG_GROUP="/adp/${ENVIRONMENT}/agent-factory/bootstrap"
 # no state: `terraform state list` exits 1 ("No state file was found!") while
 # `terraform state pull` succeeds with an empty or resource-less state, so a
 # fresh environment is treated as managing nothing. Unreadable state still fails.
+# The pulled state is only piped into the check, never stored or written to disk.
 webhook_state_addresses() {
-  local state rc=0
-  state=$(terraform state pull) || return 1
-  python3 -c '
+  local rc=0
+  { terraform state pull || echo "state-pull-failed"; } | python3 -c '
 import json, sys
 text = sys.stdin.read().strip()
+if text.endswith("state-pull-failed"):
+    sys.exit(1)
 sys.exit(0 if text and json.loads(text).get("resources") else 3)
-' <<< "$state" || rc=$?
+' || rc=$?
   case "$rc" in
     0) terraform state list ;;
     3) return 0 ;;

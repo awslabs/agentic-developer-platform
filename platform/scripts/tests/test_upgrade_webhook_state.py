@@ -166,6 +166,18 @@ class WebhookStateInspectionTests(unittest.TestCase):
         self.assertIn("Cannot inspect webhook Terraform state", result.stderr)
         self.assertEqual(imports, [])
 
+    def test_failed_pull_with_partial_output_stops_the_deploy(self):
+        # A pull that prints a plausible document and then fails must not be trusted.
+        result, imports = self.run_helper(
+            "adopt_door_identity_rbac",
+            pull_rc=1,
+            pull_out=EMPTY_S3_STATE,
+            live_objects=True,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Cannot inspect webhook Terraform state", result.stderr)
+        self.assertEqual(imports, [])
+
     def test_invalid_state_document_stops_the_deploy(self):
         result, _ = self.run_helper(
             "adopt_door_identity_rbac", pull_out="<html>not state</html>"
