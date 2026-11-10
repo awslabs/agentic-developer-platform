@@ -244,13 +244,33 @@ fi
 # when the group is present in AWS AND absent from state. Both guards make this
 # a clean no-op on re-runs rather than a collision.
 BOOTSTRAP_LOG_GROUP="/adp/${ENVIRONMENT}/agent-factory/bootstrap"
+
+# Print the module's managed resource addresses. Before the first apply there is
+# no state: `terraform state list` exits 1 ("No state file was found!") while
+# `terraform state pull` succeeds with an empty or resource-less state, so a
+# fresh environment is treated as managing nothing. Unreadable state still fails.
+webhook_state_addresses() {
+  local state rc=0
+  state=$(terraform state pull) || return 1
+  python3 -c '
+import json, sys
+text = sys.stdin.read().strip()
+sys.exit(0 if text and json.loads(text).get("resources") else 3)
+' <<< "$state" || rc=$?
+  case "$rc" in
+    0) terraform state list ;;
+    3) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 # The door identity Role/RoleBinding in adp-agents were applied live on dev before
 # door-identity-rbac.tf declared them (#7870/#7892). Adopt them when present so the
 # apply converges instead of failing with "already exists"; a fresh environment
 # has nothing to adopt. Arguments: the terraform var arguments the apply uses.
 adopt_door_identity_rbac() {
   local managed_addresses
-  managed_addresses=$(terraform state list) || fail "Cannot inspect webhook Terraform state"
+  managed_addresses=$(webhook_state_addresses) || fail "Cannot inspect webhook Terraform state"
   local kind addr
   for kind in role role_binding; do
     addr="kubernetes_${kind}.door_identity_keys_read"
@@ -284,7 +304,7 @@ import_bootstrap_log_group() {
   # match, Terraform can receive SIGPIPE, and an already-managed group is then
   # incorrectly imported again. State-read failures must also stop the upgrade.
   local managed_addresses
-  managed_addresses=$(terraform state list) || fail "Cannot inspect webhook Terraform state"
+  managed_addresses=$(webhook_state_addresses) || fail "Cannot inspect webhook Terraform state"
   if grep -Fxq 'aws_cloudwatch_log_group.agent_bootstrap' <<< "$managed_addresses"; then
     ok "Bootstrap log group already in state — no import needed"
     return 0
