@@ -398,10 +398,11 @@ fi
 # Every later Terraform and kubectl request must leave from that one address.
 # Hosts behind rotating NAT or proxy egress pools pass a single lookup and then
 # time out against the EKS API minutes later, so sample the address and refuse
-# when the samples disagree. Prints the distinct IPv4 addresses seen.
+# when the samples disagree. Sampling is a heuristic: a small pool can still
+# agree by chance. Prints the distinct IPv4 addresses seen.
 detect_public_ips() {
   local ip url seen=""
-  for _ in 1 2 3; do
+  for _ in 1 2 3 4 5; do
     ip=$(curl -fsS --max-time 5 https://checkip.amazonaws.com 2>/dev/null | tr -d '[:space:]' || true)
     [[ "$ip" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || continue
     case " $seen " in *" $ip "*) ;; *) seen="${seen:+$seen }$ip" ;; esac
@@ -414,13 +415,28 @@ detect_public_ips() {
   fi
   printf '%s' "$seen"
 }
+# The detected /32 only matters while this run can still apply it to a public
+# endpoint: not when a resumed run has already completed the platform phase, and
+# not when the configuration disables the public endpoint.
+eks_public_allowlist_applies() {
+  if declare -F deploy_checkpoint >/dev/null && [ "$(deploy_checkpoint status platform 2>/dev/null)" = complete ]; then
+    return 1
+  fi
+  [ "${TF_VAR_eks_endpoint_public_access:-true}" != false ] || return 1
+  ! grep -Eq '^[[:space:]]*eks_endpoint_public_access[[:space:]]*=[[:space:]]*false' \
+    "$ROOT_DIR/environments/$ENVIRONMENT/platform.tfvars" 2>/dev/null
+}
 if [ "$UPDATE_MODE" = false ] && [ -z "${TF_VAR_eks_public_access_cidrs:-}" ]; then
   MY_IP=$(detect_public_ips)
   if [ -z "$MY_IP" ]; then
     fail "Could not detect your public IP. Set TF_VAR_eks_public_access_cidrs='[\"<ip>/32\"]' manually."
   fi
   if [ "$MY_IP" != "${MY_IP%% *}" ]; then
-    fail "Public IP lookups disagree (${MY_IP// /, }): this host's outbound address changes between connections, so a /32 allowlist would lock Terraform and kubectl out of the EKS API. Set TF_VAR_eks_public_access_cidrs='[\"<egress-cidr>\"]' to the range your traffic leaves from, or deploy from a host with a stable address."
+    if eks_public_allowlist_applies; then
+      fail "Public IP lookups disagree (${MY_IP// /, }): this host's outbound address changes between connections, so a /32 allowlist would lock Terraform and kubectl out of the EKS API. Set TF_VAR_eks_public_access_cidrs='[\"<egress-cidr>\"]' to the range your traffic leaves from, or deploy from a host with a stable address."
+    fi
+    warn "Public IP lookups disagree (${MY_IP// /, }); continuing because this run does not apply the EKS public allowlist"
+    MY_IP="${MY_IP%% *}"
   fi
   export TF_VAR_eks_public_access_cidrs="[\"${MY_IP}/32\"]"
   ok "EKS public API will allow: ${MY_IP}/32 (your current public IP)"
