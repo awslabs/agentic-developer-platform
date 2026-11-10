@@ -53,6 +53,29 @@ else
   fail "AWS CLI not installed. Install: https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html"
 fi
 
+# Python 3.12+ with boto3 (always required). Deploy helpers import boto3 only when
+# their stage runs (for example upgrade-chat.py in the agent-factory stage), so a
+# missing module would otherwise surface hours into a full installation.
+check_python_runtime() {
+  if ! command -v python3 &>/dev/null; then
+    fail "python3 not installed (Python 3.12+ with boto3 is required)"
+    return
+  fi
+  local version
+  version=$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])')
+  if python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 12) else 1)'; then
+    pass "Python: $version"
+  else
+    fail "Python $version is too old (need >= 3.12)"
+  fi
+  if python3 -c 'import boto3' 2>/dev/null; then
+    pass "Python boto3: $(python3 -c 'import boto3; print(boto3.__version__)')"
+  else
+    fail "Python module boto3 not installed for $(command -v python3). Install: python3 -m pip install boto3"
+  fi
+}
+check_python_runtime
+
 # zip (needed for CodeBuild source packaging in default mode)
 if command -v zip &>/dev/null; then
   pass "zip: available"

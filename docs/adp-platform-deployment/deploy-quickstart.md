@@ -10,7 +10,7 @@ of the target AWS account before deployment.
 ## 1. Prepare
 
 You need an AWS profile with permission to provision the platform, AWS CLI v2,
-Git, Python 3.12+, Terraform 1.14+, kubectl, Node.js 22+ and npm. Release selection
+Git, Python 3.12+ with `boto3`, Terraform 1.14+, kubectl, Node.js 22+ and npm. Release selection
 also needs the GitHub CLI (`gh`) authenticated with read access to `aws-e/adp`.
 Docker is required when using `--local` builds; the default uses AWS CodeBuild.
 The underlying preflight checks the remaining requirements for your scope.
