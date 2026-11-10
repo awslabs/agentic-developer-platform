@@ -499,6 +499,13 @@ PY
 else
   resolve_deploy_scope
 fi
+# Helpers for the selected stages import boto3 only when they run: upgrade-chat.py
+# in the agent-factory stage and gateway-role-policy-cutover.py in gateway updates.
+# Stop before provisioning instead of failing after earlier stages were applied.
+if [ "$DESTROY" = false ] && { [ "$DEPLOY_FACTORY" = true ] || { [ "$UPDATE_MODE" = true ] && [ "$DEPLOY_GATEWAY" = true ]; }; }; then
+  python3 -c 'import boto3' 2>/dev/null \
+    || fail "Python module boto3 is not installed for $(command -v python3), and the selected stages need it (agent-factory stage, gateway updates). Install: python3 -m pip install boto3"
+fi
 # Pin fresh installs and updates to the source being deployed. Reusing :latest
 # can leave an old Ready pod serving while migration verification reports success.
 SOURCE_SHA=$(git -C "$ROOT_DIR" rev-parse HEAD) || fail "Cannot pin deployment to a source commit"
