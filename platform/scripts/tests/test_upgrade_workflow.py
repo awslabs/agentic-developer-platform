@@ -422,15 +422,19 @@ kubectl() { echo "kubectl $*" >> "$CALLS"; }
 
     def test_already_managed_log_group_is_never_imported_again(self):
         source = (ROOT / "modules/agent-factory/webhook-ingress/scripts/deploy-webhook-ingress.sh").read_text()
+        helper = source.index("webhook_state_addresses() {")
         start = source.index("import_bootstrap_log_group() {")
-        function = source[start:source.index('\n}\n', start) + 3]
+        function = (source[helper:source.index('\n}\n', helper) + 3] +
+                    source[start:source.index('\n}\n', start) + 3])
         prefix = '''set -euo pipefail
 aws() { echo "$BOOTSTRAP_LOG_GROUP"; }
 ok() { :; }
 warn() { :; }
 fail() { echo "$*" >&2; exit 1; }
 terraform() {
-  if [ "$1 $2" = "state list" ]; then
+  if [ "$1 $2" = "state pull" ]; then
+    echo '{"version": 4, "resources": [{"type": "aws_cloudwatch_log_group", "name": "agent_bootstrap"}]}'
+  elif [ "$1 $2" = "state list" ]; then
     if [ "$STATE_FAIL" = true ]; then return 1; fi
     echo aws_cloudwatch_log_group.agent_bootstrap
     # More than a pipe buffer: the old grep -q pipeline could close the pipe
