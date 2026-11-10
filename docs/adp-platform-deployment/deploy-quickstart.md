@@ -161,8 +161,9 @@ The EC2 developer desktop is not part of the core platform. `--dev-box on` (or
 factory; `--dev-box-only` adds it to an existing environment on its own. Both call
 `modules/user-services/dev-box/scripts/deploy-dev-box.sh`, which needs
 `environments/<env>/modules/dev-box.tfvars` and `dev-box-platform.tfvars` (dev ships
-them with `stage_enabled = true`, so dev runs the stage by default; `--dev-box off`
-skips it). Without the module nothing changes. See the "Dev Box" sections of
+them with `stage_enabled = true`, so dev runs the stage by default in the account
+those inputs name; `--dev-box off` skips it). In any other account the bundled
+inputs leave the stage off until you supply your own. Without the module nothing changes. See the "Dev Box" sections of
 [deployment-reference.md](deployment-reference.md).
 
 ```bash

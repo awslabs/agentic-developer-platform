@@ -223,12 +223,21 @@ fi
 #      (platform prerequisites, AMI, foundation, controller, seed, verification).
 #      Requires environments/<env>/modules/dev-box.tfvars.
 # An empty mode is decided by that tfvars file: `stage_enabled = true` turns the
-# stage on (dev), anything else leaves it off.
+# stage on (dev) when the file's account_id is the target account; anything else
+# leaves it off. Inputs that name another account (the bundled dev file in any
+# other account) would only fail the stage's account check after the core
+# installation, so they do not select the stage by default.
 DEV_BOX_TFVARS="$ROOT_DIR/environments/$ENVIRONMENT/modules/dev-box.tfvars"
+DEV_BOX_OTHER_ACCOUNT_INPUTS=false
 if [ -z "$DEV_BOX_MODE" ]; then
   DEV_BOX_MODE=off
   if [ -f "$DEV_BOX_TFVARS" ] && grep -Eq '^[[:space:]]*stage_enabled[[:space:]]*=[[:space:]]*true' "$DEV_BOX_TFVARS"; then
-    DEV_BOX_MODE=on
+    DEV_BOX_INPUT_ACCOUNT=$(sed -nE '/^[[:space:]]*account_id[[:space:]]*=/{s/^[^=]*=[[:space:]]*"?([0-9]{12})"?.*/\1/p;q;}' "$DEV_BOX_TFVARS")
+    if [ -n "${ADP_ACCOUNT_ID:-}" ] && [ "$DEV_BOX_INPUT_ACCOUNT" = "$ADP_ACCOUNT_ID" ]; then
+      DEV_BOX_MODE=on
+    else
+      DEV_BOX_OTHER_ACCOUNT_INPUTS=true
+    fi
   fi
 fi
 case "$DEV_BOX_MODE" in
@@ -236,7 +245,11 @@ case "$DEV_BOX_MODE" in
     [ -f "$DEV_BOX_TFVARS" ] || fail "--dev-box on requires environments/$ENVIRONMENT/modules/dev-box.tfvars (copy environments/dev/modules/dev-box.tfvars and set the platform-account values); refusing before any apply"
     ok "Dev Box: on — Step 12 runs modules/user-services/dev-box/scripts/deploy-dev-box.sh ($DEV_BOX_TFVARS)" ;;
   off) [ "$DEV_BOX_ONLY" = false ] || fail "--dev-box-only cannot combine with --dev-box off"
-       echo "Dev Box: off (optional module not selected; --dev-box on or stage_enabled = true in environments/$ENVIRONMENT/modules/dev-box.tfvars enables it)" ;;
+       if [ "$DEV_BOX_OTHER_ACCOUNT_INPUTS" = true ]; then
+         echo "Dev Box: off (environments/$ENVIRONMENT/modules/dev-box.tfvars enables the stage for a different AWS account than ${ADP_ACCOUNT_ID:-the target}; set this account's inputs there, or pass --dev-box on, to run it)"
+       else
+         echo "Dev Box: off (optional module not selected; --dev-box on or stage_enabled = true in environments/$ENVIRONMENT/modules/dev-box.tfvars enables it)"
+       fi ;;
   *) fail "--dev-box must be on or off (got: $DEV_BOX_MODE)" ;;
 esac
 
