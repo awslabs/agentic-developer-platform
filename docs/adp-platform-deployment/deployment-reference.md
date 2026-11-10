@@ -950,7 +950,7 @@ option in the UI. It joins a deployment in one of three ways:
 | How | Effect |
 |---|---|
 | `deploy-all.sh --dev-box on` (or `ADP_DEV_BOX=on`; `deploy.sh` passes both through) | Step 12 runs after the agent factory and chat (Steps 10 and 10c) |
-| `environments/<env>/modules/dev-box.tfvars` with `stage_enabled = true` | same, by default for that environment (dev does this); `--dev-box off` overrides |
+| `environments/<env>/modules/dev-box.tfvars` with `stage_enabled = true` and the target account's `account_id` | same, by default for that environment (dev does this in the account its inputs name); `--dev-box off` overrides. Inputs naming another account leave the stage off |
 | `deploy-all.sh --dev-box-only` | platform (Steps 1–2) + Step 12 only — add the module to an existing environment |
 
 Step 12 is one call into the module's own entrypoint,
@@ -1236,7 +1236,7 @@ rejection reason.
 
 | What | Where it is declared | Applied / rendered by |
 |---|---|---|
-| Stage selection: `--dev-box on\|off`, `ADP_DEV_BOX`, `--dev-box-only`; default off unless `stage_enabled = true` in the environment's tfvars | `environments/<env>/modules/dev-box.tfvars` (+ `dev-box-platform.tfvars`, both backend files); dev ships them | deploy-all.sh Step 12 → `modules/user-services/dev-box/scripts/deploy-dev-box.sh`; journal `notes.dev-box-mode` (written only when on; a default run's journal is unchanged); the mode is part of the resume binding |
+| Stage selection: `--dev-box on\|off`, `ADP_DEV_BOX`, `--dev-box-only`; default off unless the environment's tfvars set `stage_enabled = true` for the target account (`account_id`) | `environments/<env>/modules/dev-box.tfvars` (+ `dev-box-platform.tfvars`, both backend files); dev ships them | deploy-all.sh Step 12 → `modules/user-services/dev-box/scripts/deploy-dev-box.sh`; journal `notes.dev-box-mode` (written only when on; a default run's journal is unchanged); the mode is part of the resume binding |
 | Platform prerequisites: KMS key `alias/adp-<env>-dev-box-workspace`, SSM interface endpoints + group, CodeBuild `adp-<env>-dev-box-image`; SSM `/adp/<env>/dev-box/{kms-key-arn,ssm-endpoint-security-group-id,image-builder-project}` | `modules/user-services/dev-box/infra/platform` | stage step 1 |
 | AMI: SSM `/adp/<env>/dev-box/{image-id,image-revision,image-source-revision,base-image-id,profile-revision}` (script-owned) | `modules/user-services/dev-box/image/buildspec.yml`, `image/*.pkr.hcl` | `scripts/build-dev-box-image.sh` (stage step 2 when image-id is absent, or on demand with the Crew bundle) |
 | Foundation: guest/controller IAM, launch template, controller runtime IRSA role `adp-<env>-dev-box-controller-runtime`; SSM `/adp/<env>/dev-box/{deployment-id,max-deployment-*,policy-org-id,launch-template-*,controller-*,guest-*,run-table-arn,gateway-execute-arn,ssh-grant-role-arn,...}` | `modules/user-services/dev-box/infra` (`main.tf` + `self_managed.tf` + `ssh-grant.tf`), values in `dev-box.tfvars`; `image_id`/`source_revision`/`crew_profile_revision`/`kms_key_arn`/`ssm_endpoint_security_group_id`/`eks_oidc_provider_arn`/`rds_resource_id`/`gateway_principal_arn` resolved by the stage | stage step 3 |

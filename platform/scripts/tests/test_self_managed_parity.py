@@ -345,15 +345,21 @@ warn() {{ echo "WARN: $*"; }}
             self.assertNotEqual(code, 0)
             self.assertIn("--dev-box must be on or off", out)
 
+    def _dev_tfvars_account(self):
+        tfvars = (ROOT / "environments/dev/modules/dev-box.tfvars").read_text()
+        return re.search(r'(?m)^account_id\s*=\s*"([0-9]{12})"', tfvars).group(1)
+
     def test_dev_tfvars_turn_the_stage_on_and_the_switch_overrides_them(self):
-        code, out = self._run_dev_box_gate(ROOT)
+        # The bundled dev inputs select the stage by default in the account they name.
+        account = {"ADP_ACCOUNT_ID": self._dev_tfvars_account()}
+        code, out = self._run_dev_box_gate(ROOT, env=account)
         self.assertEqual(code, 0, out)
         self.assertIn("dev_box=on only=false", out)
         self.assertIn("Dev Box: on", out)
-        code, out = self._run_dev_box_gate(ROOT, "--dev-box", "off")
+        code, out = self._run_dev_box_gate(ROOT, "--dev-box", "off", env=account)
         self.assertEqual(code, 0, out)
         self.assertIn("dev_box=off only=false", out)
-        code, out = self._run_dev_box_gate(ROOT, env={"ADP_DEV_BOX": "off"})
+        code, out = self._run_dev_box_gate(ROOT, env=dict(account, ADP_DEV_BOX="off"))
         self.assertIn("dev_box=off only=false", out)
         code, out = self._run_dev_box_gate(ROOT, "--dev-box-only")
         self.assertEqual(code, 0, out)
@@ -363,6 +369,40 @@ warn() {{ echo "WARN: $*"; }}
         self.assertIn("--dev-box-only cannot combine with --dev-box off", out)
         tfvars = (ROOT / "environments/dev/modules/dev-box.tfvars").read_text()
         self.assertRegex(tfvars, r"(?m)^stage_enabled\s*=\s*true")
+
+    def test_inputs_for_another_account_do_not_select_the_stage_by_default(self):
+        # A fresh install into any other account reuses the bundled dev inputs; the
+        # stage's own account check would refuse them only after the core install.
+        for env in ({"ADP_ACCOUNT_ID": "111122223333"}, {}):
+            with self.subTest(env=env):
+                code, out = self._run_dev_box_gate(ROOT, env=env)
+                self.assertEqual(code, 0, out)
+                self.assertIn("dev_box=off only=false", out)
+                self.assertIn("enables the stage for a different AWS account", out)
+                self.assertNotIn(self._dev_tfvars_account(), out)
+        # An explicit request still reaches the stage, which validates its inputs.
+        for args in (("--dev-box", "on"), ("--dev-box-only",)):
+            code, out = self._run_dev_box_gate(ROOT, *args, env={"ADP_ACCOUNT_ID": "111122223333"})
+            self.assertEqual(code, 0, out)
+            self.assertIn("dev_box=on", out)
+        code, out = self._run_dev_box_gate(ROOT, env={"ADP_DEV_BOX": "on", "ADP_ACCOUNT_ID": "111122223333"})
+        self.assertIn("dev_box=on only=false", out)
+
+    def test_enabled_inputs_must_name_the_target_account(self):
+        cases = (('stage_enabled = true\naccount_id = "111122223333"\n', "on"),
+                 ('stage_enabled = true\naccount_id    =   "111122223333"   # platform\n', "on"),
+                 ('stage_enabled = true\naccount_id = "444455556666"\n', "off"),
+                 ('stage_enabled = true\n', "off"),
+                 ('stage_enabled = true\naccount_id = "not-an-account"\n', "off"),
+                 ('stage_enabled = false\naccount_id = "111122223333"\n', "off"))
+        for content, expected in cases:
+            with self.subTest(content=content), tempfile.TemporaryDirectory() as root:
+                modules = Path(root) / "environments/dev/modules"
+                modules.mkdir(parents=True)
+                (modules / "dev-box.tfvars").write_text(content)
+                code, out = self._run_dev_box_gate(root, env={"ADP_ACCOUNT_ID": "111122223333"})
+                self.assertEqual(code, 0, out)
+                self.assertIn(f"dev_box={expected} only=false", out)
 
     def _dev_box_step(self, mode, update=False):
         start = DEPLOY_ALL.index("if deploy_phase_begin dev-box; then")
