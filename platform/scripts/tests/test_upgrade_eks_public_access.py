@@ -135,32 +135,50 @@ print(body)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("Public IP lookups disagree", result.stderr)
 
-    def test_resume_after_the_platform_phase_is_not_blocked(self):
-        # The platform phase is the only fresh-install consumer of the allowlist.
-        result, _ = self.run_block({CHECKIP: list(ROTATING)}, platform_phase="complete")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn(
-            "WARN: Public IP lookups disagree (192.0.2.10, 192.0.2.77); continuing",
-            result.stdout,
-        )
-        self.assertIn('CIDRS=["192.0.2.10/32"]', result.stdout)
+    NOT_APPLIED = (
+        {"platform_phase": "complete"},
+        {
+            "platform_phase": "pending",
+            "tfvars": 'vpc_cidr = "10.0.0.0/16"\neks_endpoint_public_access = false\n',
+        },
+        {
+            "platform_phase": "pending",
+            "extra_env": {"TF_VAR_eks_endpoint_public_access": "false"},
+        },
+    )
 
-    def test_private_only_endpoint_is_not_blocked(self):
-        for kwargs in (
-            {
-                "tfvars": 'vpc_cidr = "10.0.0.0/16"\neks_endpoint_public_access = false\n'
-            },
-            {"extra_env": {"TF_VAR_eks_endpoint_public_access": "false"}},
-        ):
+    def test_runs_that_do_not_apply_the_allowlist_take_one_lookup_and_never_refuse(
+        self,
+    ):
+        # The platform phase of a fresh run is the only consumer of the allowlist, and
+        # only for a public endpoint. Elsewhere one lookup records the value as before.
+        for kwargs in self.NOT_APPLIED:
             with self.subTest(**kwargs):
-                result, _ = self.run_block(
-                    {CHECKIP: list(ROTATING)}, platform_phase="pending", **kwargs
-                )
+                result, calls = self.run_block({CHECKIP: list(ROTATING)}, **kwargs)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn('CIDRS=["192.0.2.10/32"]', result.stdout)
+                self.assertEqual(calls, [CHECKIP])
+
+    def test_failed_lookups_do_not_stop_a_run_that_does_not_apply_the_allowlist(self):
+        for kwargs in self.NOT_APPLIED:
+            with self.subTest(**kwargs):
+                result, calls = self.run_block({}, **kwargs)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIn(
-                    "continuing because this run does not apply the EKS public allowlist",
-                    result.stdout,
+                    "WARN: Could not detect your public IP; continuing", result.stdout
                 )
+                self.assertIn("CIDRS=\n", result.stdout + "\n")
+                self.assertEqual(
+                    calls, [CHECKIP, "https://api.ipify.org", "https://ifconfig.me"]
+                )
+
+    def test_failed_lookups_still_stop_a_run_that_applies_the_allowlist(self):
+        for phase in ("pending", "failed", None):
+            with self.subTest(platform_phase=phase):
+                result, calls = self.run_block({}, platform_phase=phase)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("Could not detect your public IP", result.stderr)
+                self.assertEqual(len(calls), SAMPLES + 2)
 
     def test_public_endpoint_settings_still_refuse(self):
         for tfvars in (

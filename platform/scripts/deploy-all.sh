@@ -399,10 +399,10 @@ fi
 # Hosts behind rotating NAT or proxy egress pools pass a single lookup and then
 # time out against the EKS API minutes later, so sample the address and refuse
 # when the samples disagree. Sampling is a heuristic: a small pool can still
-# agree by chance. Prints the distinct IPv4 addresses seen.
+# agree by chance. Prints the distinct IPv4 addresses seen in <samples> lookups.
 detect_public_ips() {
-  local ip url seen=""
-  for _ in 1 2 3 4 5; do
+  local samples="$1" sample ip url seen=""
+  for ((sample = 0; sample < samples; sample++)); do
     ip=$(curl -fsS --max-time 5 https://checkip.amazonaws.com 2>/dev/null | tr -d '[:space:]' || true)
     [[ "$ip" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || continue
     case " $seen " in *" $ip "*) ;; *) seen="${seen:+$seen }$ip" ;; esac
@@ -427,19 +427,23 @@ eks_public_allowlist_applies() {
     "$ROOT_DIR/environments/$ENVIRONMENT/platform.tfvars" 2>/dev/null
 }
 if [ "$UPDATE_MODE" = false ] && [ -z "${TF_VAR_eks_public_access_cidrs:-}" ]; then
-  MY_IP=$(detect_public_ips)
-  if [ -z "$MY_IP" ]; then
-    fail "Could not detect your public IP. Set TF_VAR_eks_public_access_cidrs='[\"<ip>/32\"]' manually."
-  fi
-  if [ "$MY_IP" != "${MY_IP%% *}" ]; then
-    if eks_public_allowlist_applies; then
+  if eks_public_allowlist_applies; then
+    MY_IP=$(detect_public_ips 5)
+    [ -n "$MY_IP" ] || fail "Could not detect your public IP. Set TF_VAR_eks_public_access_cidrs='[\"<ip>/32\"]' manually."
+    if [ "$MY_IP" != "${MY_IP%% *}" ]; then
       fail "Public IP lookups disagree (${MY_IP// /, }): this host's outbound address changes between connections, so a /32 allowlist would lock Terraform and kubectl out of the EKS API. Set TF_VAR_eks_public_access_cidrs='[\"<egress-cidr>\"]' to the range your traffic leaves from, or deploy from a host with a stable address."
     fi
-    warn "Public IP lookups disagree (${MY_IP// /, }); continuing because this run does not apply the EKS public allowlist"
-    MY_IP="${MY_IP%% *}"
+  else
+    # This run does not apply the allowlist. One best-effort lookup records the
+    # same value as before; a failed lookup must not stop the run.
+    MY_IP=$(detect_public_ips 1)
   fi
-  export TF_VAR_eks_public_access_cidrs="[\"${MY_IP}/32\"]"
-  ok "EKS public API will allow: ${MY_IP}/32 (your current public IP)"
+  if [ -n "$MY_IP" ]; then
+    export TF_VAR_eks_public_access_cidrs="[\"${MY_IP}/32\"]"
+    ok "EKS public API will allow: ${MY_IP}/32 (your current public IP)"
+  else
+    warn "Could not detect your public IP; continuing because this run does not apply the EKS public allowlist"
+  fi
 else
   ok "EKS access: preserving existing configuration during upgrades"
 fi
