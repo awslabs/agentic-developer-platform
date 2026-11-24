@@ -7,10 +7,6 @@
     "commit": "144ca65f8501953fa8b41cd1d37c7223051c85b7",
     "patch_sha256": "6a739da4f599e500387645ac4b7feb4f93860a2d23d0684090fca6df0ba3a5ef"
   },
-  "acr": {
-    "commit": "726f4811d1f2da429555fce4c1868c1a7be96f19",
-    "patch_sha256": "12e58ffe4b42f216e3b477125f0b7f14aeff591528ea276ee55e03480dcabefa"
-  },
   "runc": {
     "commit": "bb14dabeb7185bb72c8c86735d090dcb20f36587",
     "patch_sha256": "a960fcb184f19b1f1e6b68345606c8d1119ff88b91496d19b715320899d7c6af"
